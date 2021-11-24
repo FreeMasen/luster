@@ -5,11 +5,9 @@ mod compiler;
 mod constant;
 mod error;
 pub mod io;
-mod lexer;
 #[macro_use]
 mod lua;
 mod opcode;
-pub mod parser;
 mod string;
 mod table;
 mod thread;
@@ -18,6 +16,7 @@ mod value;
 
 mod stdlib;
 
+pub use analisar::{Error as AnalisarError, Parser};
 pub use callback::{Callback, CallbackResult, CallbackReturn, Continuation};
 pub use closure::{
     Closure, ClosureError, ClosureState, FunctionProto, UpValue, UpValueDescriptor, UpValueState,
@@ -25,10 +24,9 @@ pub use closure::{
 pub use compiler::{compile, compile_chunk, CompilerError};
 pub use constant::Constant;
 pub use error::{Error, RuntimeError, StaticError, TypeError};
-pub use lexer::{Lexer, LexerError, Token};
+pub use lex_lua::{SpannedLexer as Lexer, Token};
 pub use lua::{Lua, Root};
 pub use opcode::OpCode;
-pub use parser::{parse_chunk, ParserError};
 pub use string::{InternedStringSet, String, StringError};
 pub use table::{InvalidTableKey, Table, TableState};
 pub use thread::{

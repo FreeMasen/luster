@@ -6,7 +6,7 @@ use gc_arena::{Collect, MutationContext, StaticCollect};
 
 use crate::{
     BadThreadMode, BinaryOperatorError, ClosureError, CompilerError, InternedStringSet,
-    InvalidTableKey, ParserError, StringError, ThreadError, Value,
+    InvalidTableKey, StringError, ThreadError, Value,
 };
 
 #[derive(Debug, Clone, Copy, Collect)]
@@ -47,7 +47,7 @@ impl<'gc> fmt::Display for RuntimeError<'gc> {
 #[collect(no_drop)]
 pub enum Error<'gc> {
     IoError(StaticCollect<io::Error>),
-    ParserError(ParserError),
+    ParserError(analisar::Error),
     CompilerError(CompilerError),
     ClosureError(ClosureError),
     InvalidTableKey(InvalidTableKey),
@@ -85,8 +85,8 @@ impl<'gc> From<io::Error> for Error<'gc> {
     }
 }
 
-impl<'gc> From<ParserError> for Error<'gc> {
-    fn from(error: ParserError) -> Error<'gc> {
+impl<'gc> From<analisar::Error> for Error<'gc> {
+    fn from(error: analisar::Error) -> Error<'gc> {
         Error::ParserError(error)
     }
 }
@@ -185,7 +185,7 @@ impl<'gc> Error<'gc> {
 #[collect(require_static)]
 pub enum StaticError {
     IoError(io::Error),
-    ParserError(ParserError),
+    ParserError(analisar::Error),
     CompilerError(CompilerError),
     ClosureError(ClosureError),
     InvalidTableKey(InvalidTableKey),

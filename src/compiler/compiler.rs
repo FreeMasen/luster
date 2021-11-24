@@ -2,21 +2,19 @@ use std::collections::{HashMap, VecDeque};
 use std::error::Error as StdError;
 use std::{fmt, iter, mem};
 
+use analisar::aware::ast::Name;
 use num_traits::cast;
 
 use gc_arena::{Collect, Gc, MutationContext};
 
-use crate::parser::{
-    AssignmentStatement, AssignmentTarget, BinaryOperator, Block, CallSuffix, Chunk,
-    ConstructorField, Expression, FieldSuffix, ForStatement, FunctionCallStatement,
-    FunctionDefinition, FunctionStatement, HeadExpression, IfStatement, LocalFunctionStatement,
-    LocalStatement, PrimaryExpression, RecordKey, RepeatStatement, ReturnStatement,
-    SimpleExpression, Statement, SuffixPart, SuffixedExpression, TableConstructor, UnaryOperator,
-    WhileStatement,
-};
 use crate::{
     Constant, ConstantIndex16, ConstantIndex8, FunctionProto, OpCode, Opt254, PrototypeIndex,
     RegisterIndex, String, UpValueDescriptor, UpValueIndex, VarCount,
+};
+use analisar::ast::{
+    Args, BinaryOperator, Block, ElseIf, Expression, Expression, Field, ForInLoop, ForLoop,
+    FuncBody, FuncName, FunctionCall, If, LiteralString, Name, NameList, Numeral, ParList,
+    RetStatement, Statement, Suffixed, Table, UnaryOperator,
 };
 
 use super::operators::{
@@ -205,7 +203,7 @@ struct PendingJump<'gc> {
 }
 
 impl<'gc, 'a> Compiler<'gc, 'a> {
-    fn block(&mut self, block: &Block<String<'gc>>) -> Result<(), CompilerError> {
+    fn block(&mut self, block: &Block) -> Result<(), CompilerError> {
         self.enter_block();
         self.block_statements(block)?;
         self.exit_block()
@@ -297,14 +295,26 @@ impl<'gc, 'a> Compiler<'gc, 'a> {
         Ok(())
     }
 
-    fn statement(&mut self, statement: &Statement<String<'gc>>) -> Result<(), CompilerError> {
+    fn statement(&mut self, statement: &Statement) -> Result<(), CompilerError> {
         match statement {
             Statement::If(if_statement) => self.if_statement(if_statement),
-            Statement::While(while_statement) => self.while_statement(while_statement),
-            Statement::Do(block) => self.block(block),
+            Statement::While {
+                exp,
+                block,
+             } => self.while_statement(exp, block),
+            Statement::Do { 
+                block
+             } => self.block(block),
             Statement::For(for_statement) => self.for_statement(for_statement),
-            Statement::Repeat(repeat_statement) => self.repeat_statement(repeat_statement),
-            Statement::Function(function_statement) => self.function_statement(function_statement),
+            Statement::Repeat { 
+                block,
+                exp,
+             } => self.repeat_statement(block, exp),
+            Statement::Function {
+                local,
+                name,
+                body,
+             } => self.function_statement(*local, name, body),
             Statement::LocalFunction(local_function) => {
                 self.local_function_statement(local_function)
             }
@@ -315,7 +325,11 @@ impl<'gc, 'a> Compiler<'gc, 'a> {
             Statement::Break => self.jump(JumpLabel::Break),
             Statement::Goto(goto_statement) => self.jump(JumpLabel::Named(goto_statement.name)),
             Statement::FunctionCall(function_call) => self.function_call_statement(function_call),
-            Statement::Assignment(assignment) => self.assignment_statement(assignment),
+            Statement::Assignment {
+                local,
+                targets,
+                values,
+             } => self.assignment_statement(*local, targets, values),
         }
     }
 
@@ -545,19 +559,20 @@ impl<'gc, 'a> Compiler<'gc, 'a> {
 
     fn while_statement(
         &mut self,
-        while_statement: &WhileStatement<String<'gc>>,
+        condition: &Expression,
+        block: &Block,
     ) -> Result<(), CompilerError> {
         let start_label = self.unique_jump_label();
         let end_label = self.unique_jump_label();
 
         self.jump_target(start_label)?;
-        let condition = self.expression(&while_statement.condition)?;
+        let condition = self.expression(condition)?;
         self.expr_test(condition, true)?;
         self.jump(end_label)?;
 
         self.enter_block();
 
-        self.block_statements(&while_statement.block)?;
+        self.block_statements(block)?;
         self.jump(start_label)?;
 
         self.jump_target(JumpLabel::Break)?;
@@ -569,7 +584,8 @@ impl<'gc, 'a> Compiler<'gc, 'a> {
 
     fn repeat_statement(
         &mut self,
-        repeat_statement: &RepeatStatement<String<'gc>>,
+        body: &Block,
+        condition: &Expression
     ) -> Result<(), CompilerError> {
         let start_label = self.unique_jump_label();
 
@@ -580,14 +596,15 @@ impl<'gc, 'a> Compiler<'gc, 'a> {
 
         // `repeat` statements do not follow the trailing label rule, because the variables inside
         // the block are in scope for the `until` condition at the end.
-        for statement in &repeat_statement.body.statements {
+        for statement in &body.0 {
+            if let Statement::Return(ret_stmt) = statement {
+                self.return_statement(ret_stmt)?;
+                break;
+            }
             self.statement(statement)?;
         }
-        if let Some(return_statement) = &repeat_statement.body.return_statement {
-            self.return_statement(return_statement)?;
-        }
 
-        let condition = self.expression(&repeat_statement.until)?;
+        let condition = self.expression(&condition)?;
         self.expr_test(condition, true)?;
         self.jump(start_label)?;
 
@@ -600,15 +617,15 @@ impl<'gc, 'a> Compiler<'gc, 'a> {
 
     fn function_statement(
         &mut self,
-        function_statement: &FunctionStatement<String<'gc>>,
+        _local: bool,
+        name: &FuncName,
+        body: &FuncBody,
     ) -> Result<(), CompilerError> {
         let mut table = None;
-        let mut name = function_statement.name;
 
-        for field in function_statement
-            .fields
+        for field in name.dot_separated.iter()
             .iter()
-            .chain(&function_statement.method)
+            .chain(&name.method)
         {
             table = Some(if let Some(table) = table {
                 ExprDescriptor::TableField {
@@ -627,20 +644,20 @@ impl<'gc, 'a> Compiler<'gc, 'a> {
             self.get_environment()?
         };
 
-        let proto = if function_statement.method.is_some() {
-            let mut parameters = vec![String::new_static(b"self")];
-            parameters.extend(&function_statement.definition.parameters);
+        let proto = if name.method.is_some() {
+            let mut parameters = vec![Name::new("self")];
+            parameters.extend(&body.par_list.names);
 
             self.new_prototype(
                 &parameters,
-                function_statement.definition.has_varargs,
-                &function_statement.definition.body,
+                body.par_list.var_args,
+                &body.block,
             )?
         } else {
             self.new_prototype(
-                &function_statement.definition.parameters,
-                function_statement.definition.has_varargs,
-                &function_statement.definition.body,
+                &body.par_list.names,
+                body.par_list.var_args,
+                &body.block,
             )?
         };
 
@@ -736,19 +753,21 @@ impl<'gc, 'a> Compiler<'gc, 'a> {
 
     fn assignment_statement(
         &mut self,
-        assignment: &AssignmentStatement<String<'gc>>,
+        local: bool,
+        targets: &[Expression],
+        values: &[Expression],
     ) -> Result<(), CompilerError> {
-        let target_len = assignment.targets.len();
-        let val_len = assignment.values.len();
+        let target_len = targets.len();
+        let val_len = values.len();
         assert!(val_len != 0);
 
         fn assign<'gc, 'a, 's>(
             this: &'s mut Compiler<'gc, 'a>,
-            target: &AssignmentTarget<String<'gc>>,
+            target: &Expression,
             expr: ExprDescriptor<'gc>,
         ) -> Result<(), CompilerError> {
             match target {
-                AssignmentTarget::Name(name) => match this.find_variable(*name)? {
+                Expression::Name(name) => match this.find_variable(*name)? {
                     VariableDescriptor::Local(dest) => {
                         this.expr_discharge(expr, ExprDestination::Register(dest))?;
                     }
@@ -768,14 +787,9 @@ impl<'gc, 'a> Compiler<'gc, 'a> {
                     }
                 },
 
-                AssignmentTarget::Field(table, field) => {
-                    let table = this.suffixed_expression(table)?;
-                    let key = match field {
-                        FieldSuffix::Named(name) => {
-                            ExprDescriptor::Constant(Constant::String(*name))
-                        }
-                        FieldSuffix::Indexed(idx) => this.expression(idx)?,
-                    };
+                Expression::Suffixed(suffixed) => {
+                    let table = this.suffixed_expression(suffixed)?;
+                    let key = this.expression(&suffixed.property)?;
                     this.set_table(table, key, expr)?;
                 }
             }
@@ -783,7 +797,7 @@ impl<'gc, 'a> Compiler<'gc, 'a> {
         }
 
         for i in 0..val_len {
-            let expr = self.expression(&assignment.values[i])?;
+            let expr = self.expression(&values[i])?;
 
             if i >= target_len {
                 let reg = self.expr_discharge(expr, ExprDestination::AllocateNew)?;
@@ -799,12 +813,12 @@ impl<'gc, 'a> Compiler<'gc, 'a> {
                     let expr = ExprDescriptor::Variable(VariableDescriptor::Local(RegisterIndex(
                         results.0 + j,
                     )));
-                    assign(self, &assignment.targets[val_len - 1 + j as usize], expr)?;
+                    assign(self, &targets[val_len - 1 + j as usize], expr)?;
                 }
 
                 self.current_function.register_allocator.pop_to(top);
             } else {
-                assign(self, &assignment.targets[i], expr)?;
+                assign(self, &targets[i], expr)?;
             }
         }
 
@@ -813,12 +827,13 @@ impl<'gc, 'a> Compiler<'gc, 'a> {
 
     fn local_function_statement(
         &mut self,
-        local_function: &LocalFunctionStatement<String<'gc>>,
+        name: &FuncName,
+        body: &FuncBody,
     ) -> Result<(), CompilerError> {
         let proto = self.new_prototype(
-            &local_function.definition.parameters,
-            local_function.definition.has_varargs,
-            &local_function.definition.body,
+            &body.par_list,
+            body.par_list.var_args,
+            &body.block,
         )?;
 
         let dest = self
@@ -831,14 +846,14 @@ impl<'gc, 'a> Compiler<'gc, 'a> {
             .push(OpCode::Closure { proto, dest });
         self.current_function
             .locals
-            .push((local_function.name, dest));
+            .push((name, dest));
 
         Ok(())
     }
 
     fn expression(
         &mut self,
-        expression: &Expression<String<'gc>>,
+        expression: &Expression,
     ) -> Result<ExprDescriptor<'gc>, CompilerError> {
         let mut expr = self.head_expression(&expression.head)?;
         for (binop, right) in &expression.tail {
@@ -850,7 +865,7 @@ impl<'gc, 'a> Compiler<'gc, 'a> {
 
     fn head_expression(
         &mut self,
-        head_expression: &HeadExpression<String<'gc>>,
+        head_expression: &HeadExpression,
     ) -> Result<ExprDescriptor<'gc>, CompilerError> {
         match head_expression {
             HeadExpression::Simple(simple_expression) => self.simple_expression(simple_expression),
@@ -919,7 +934,7 @@ impl<'gc, 'a> Compiler<'gc, 'a> {
 
     fn suffixed_expression(
         &mut self,
-        suffixed_expression: &SuffixedExpression<String<'gc>>,
+        suffixed_expression: &Suffixed,
     ) -> Result<ExprDescriptor<'gc>, CompilerError> {
         let mut expr = self.primary_expression(&suffixed_expression.primary)?;
         for suffix in &suffixed_expression.suffixes {

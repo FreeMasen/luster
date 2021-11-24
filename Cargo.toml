@@ -11,9 +11,11 @@ lto = true
 codegen-units = 1
 
 [dependencies]
+analisar = "0.2"
 clap = "2.32"
 gc-arena = "0.2"
 gc-sequence = "0.2"
+lex_lua = "0.1"
 num-traits = "0.2"
 rand = "0.7"
 rand_xoshiro = "0.4"

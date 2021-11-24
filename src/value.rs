@@ -2,10 +2,7 @@ use std::{f64, i64, io};
 
 use gc_arena::{Collect, Gc, GcCell, MutationContext};
 
-use crate::{
-    lexer::{read_float, read_hex_float},
-    Callback, Closure, String, Table, Thread,
-};
+use crate::{Callback, Closure, String, Table, Thread};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Collect)]
 #[collect(no_drop)]
@@ -87,11 +84,12 @@ impl<'gc> Value<'gc> {
             Value::Integer(a) => Some(a as f64),
             Value::Number(a) => Some(a),
             Value::String(a) => {
-                if let Some(f) = read_hex_float(&a) {
-                    Some(f)
-                } else {
-                    read_float(&a)
-                }
+                todo!()
+                // if let Some(f) = read_hex_float(&a) {
+                //     Some(f)
+                // } else {
+                //     read_float(&a)
+                // }
             }
             _ => None,
         }
@@ -108,20 +106,20 @@ impl<'gc> Value<'gc> {
                     None
                 }
             }
-            Value::String(a) => match if let Some(f) = read_hex_float(&a) {
-                Some(f)
-            } else {
-                read_float(&a)
-            } {
-                Some(f) => {
-                    if ((f as i64) as f64) == f {
-                        Some(f as i64)
-                    } else {
-                        None
-                    }
-                }
-                _ => None,
-            },
+            Value::String(a) => todo!(), // match if let Some(f) = read_hex_float(&a) {
+            //     Some(f)
+            // } else {
+            //     read_float(&a)
+            // } {
+            //     Some(f) => {
+            //         if ((f as i64) as f64) == f {
+            //             Some(f as i64)
+            //         } else {
+            //             None
+            //         }
+            //     }
+            //     _ => None,
+            // },
             _ => None,
         }
     }
